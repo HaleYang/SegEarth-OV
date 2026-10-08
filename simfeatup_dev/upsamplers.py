@@ -271,7 +271,7 @@ class JBULearnedRange(torch.nn.Module):
         # (1, 512, 34, 34) x (1, 28, 28, 7, 7) -> (1, 512, 28, 28)
         # result =  adaptive_conv_py_simple(hr_source_padded, combined_kernel)
         combined_kernel = combined_kernel.to(hr_source_padded.dtype)
-        result =  AdaptiveConv.apply(hr_source_padded, combined_kernel)
+        result = AdaptiveConv.apply(hr_source_padded, combined_kernel) if AdaptiveConv is not None else adaptive_conv_py_simple(hr_source_padded, combined_kernel)
         return result
 
 

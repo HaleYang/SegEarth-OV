@@ -134,6 +134,8 @@ def parse_args():
     p.add_argument('--device-id', type=int, default=0)
     p.add_argument('--size', type=int, default=448)
     p.add_argument('--template', choices=['full', 'sub'], default='full')
+    p.add_argument('--prob-thd', type=float, default=None,
+                   help='覆盖配置中的预测置信度阈值')
     p.add_argument('--max-side', type=int, default=960,
                    help='可视化最大边长 (越小越快)')
     p.add_argument('--no-vis', action='store_true',
@@ -173,7 +175,8 @@ def main():
         om_dir=args.om_dir,
         device_id=args.device_id,
         name_list=name_list,
-        prob_thd=cfg.model.get('prob_thd', 0.1),
+        prob_thd=(args.prob_thd if args.prob_thd is not None
+                  else cfg.model.get('prob_thd', 0.1)),
         logit_scale=cfg.model.get('logit_scale', 50.0),
         bg_idx=cfg.model.get('bg_idx', 0),
         cls_token_lambda=cfg.model.get('cls_token_lambda', -0.3),
@@ -207,6 +210,13 @@ def main():
 
         mask_path = os.path.join(args.output, f'{base}_mask.png')
         Image.fromarray(seg_pred.astype(np.uint8)).save(mask_path)
+        # Keep the indexed mask for evaluation, and also emit a human-readable
+        # palette image. Background is intentionally black in the palette.
+        palette_arr = np.asarray(palette, dtype=np.uint8)
+        color_mask = palette_arr[np.clip(seg_pred.astype(np.int64), 0,
+                                         len(palette_arr) - 1)]
+        color_mask_path = os.path.join(args.output, f'{base}_mask_color.png')
+        Image.fromarray(color_mask, 'RGB').save(color_mask_path)
 
         if not args.no_vis:
             t1 = time.time()

@@ -181,7 +181,7 @@ class SegEarthSegmentation(BaseSegmentor):
         if feature_up:
             self.feat_dim = self.query_features.shape[-1]
             num_levels = feature_up_cfg.get('num_levels', 4)
-            self.upsampler = get_upsampler(feature_up_cfg['model_name'], self.feat_dim, num_levels=num_levels).npu().half()
+            self.upsampler = get_upsampler(feature_up_cfg['model_name'], self.feat_dim).npu().half()
             ckpt = torch.load(feature_up_cfg['model_path'], map_location='npu', weights_only=False)['state_dict']
             weights_dict = {k[10:]: v for k, v in ckpt.items()}
             self.upsampler.load_state_dict(weights_dict, strict=True)

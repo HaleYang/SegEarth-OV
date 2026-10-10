@@ -138,6 +138,68 @@ This implementation is based on [ClearCLIP](https://github.com/mc-lan/ClearCLIP)
 | torch_npu | 2.8.0.post4 |
 | Python | 3.10 |
 
+### 310P 当前验证环境
+
+下面是本仓库在 Ascend 310P3 上实际导出 ONNX、编译 OM 并运行 demo 验证过的环境。`torch`、`torch-npu` 和 `torchvision` 必须使用相互匹配的版本，不建议分别使用无上限的 `>=`。
+
+| 项目 | 当前验证版本/路径 |
+|------|------|
+| Conda 环境 | `SegEarth310` |
+| Python | `3.10.21` |
+| PyTorch | `2.12.0+cpu` |
+| torch-npu | `2.12.0.post2` |
+| torchvision | `0.27.0+cpu` |
+| CANN | `9.1.1` |
+| CANN 环境脚本 | `<CANN_ROOT>/set_env.sh` |
+| SoC | `Ascend310P3` |
+| ONNX | `1.23.0` |
+| ONNXScript | `0.7.2` |
+| mmcv | `2.1.0` |
+| mmengine | `0.10.7` |
+| mmsegmentation | `1.2.2` |
+| NumPy | `2.2.6` |
+| timm | `1.0.30` |
+
+初始化环境：
+
+```bash
+source <CONDA_ROOT>/etc/profile.d/conda.sh
+conda activate SegEarth310
+source <CANN_ROOT>/set_env.sh
+```
+
+运行 310P 任务前指定空闲 NPU。以下示例使用第二张物理卡：
+
+```bash
+export ASCEND_RT_VISIBLE_DEVICES=1
+```
+
+当前 310P 模型目录约定：
+
+```text
+models/onnx_310p/    # clip_visual.onnx、clip_text.onnx、jbu_upsampler.onnx
+models/om_310p/      # clip_visual.om、clip_text.om、jbu_upsampler.om
+```
+
+如果使用当前 310P 专用导出脚本，Visual/Text 在 NPU 导出，JBU 在 CPU 导出：
+
+```bash
+export SEG310P_OUTPUT_DIR=models/onnx_310p
+export SEG310P_JBU_UNFOLD_MODE=slice
+python scripts/export_onnx_310p.py
+```
+
+使用 Ascend310P3 编译 OM：
+
+```bash
+export ONNX_DIR=models/onnx_310p
+export OM_DIR=models/om_310p
+export SOC_VERSION=Ascend310P3
+bash scripts/build_om_310p.sh
+```
+
+> 说明：CANN 不属于 pip requirements；每个新终端都需要先 source 上面的 CANN 环境脚本。仓库内的 `open_clip/` 是本地源码，不需要额外安装 `open-clip-torch`。
+
 ## NPU 安装
 
 ```bash
@@ -149,7 +211,7 @@ conda activate SegEarth
 pip install -r requirements_npu.txt
 
 # 3. 初始化 CANN 环境（每次新终端执行）
-source /usr/local/Ascend/ascend-toolkit/latest/set_env.sh
+source <CANN_ROOT>/set_env.sh
 ```
 
 ## PyTorch 推理 (NPU)

@@ -17,7 +17,7 @@
 | `clip_text` | 文本类别特征编码 | `[8,77]` | 文本特征 `[8,512]` |
 | `jbu_upsampler` | JBU 特征上采样 | `[1,512,14,14]` + `[1,3,224,224]` | `[1,512,224,224]` |
 
-单图推理使用滑窗：输入尺寸 `448x448`，crop `224`，stride `112`。视觉 OM 得到 patch feature，JBU 放大到像素级特征，再与 9 类文本特征计算相似度并生成掩码。
+单图推理使用滑窗：输入尺寸 `448x448`，裁剪窗口大小为 `224`，窗口步长为 `112`。视觉 OM 得到 patch feature，JBU 放大到像素级特征，再与 9 类文本特征计算相似度并生成掩码。
 
 ## 2. 当前完成的优化
 
@@ -121,7 +121,7 @@ models/om_310p/query_features_full_fe86ede95e67.npy
 
 ### 4.1 为什么不继续使用原始 Unfold
 
-`F.unfold` 在 ONNX 中通常会变成 Gather 类节点。JBU 的输入是 512 通道、全分辨率 `224x224` 特征图，每个 crop 需要搬运大量大张量；在 310P 上该路径几乎被 Gather/内存访问占满。静态 Slice 虽然会使图变大，但可被 ATC 编译成明确的切片、逐元素乘加路径，实际吞吐远高于 Gather 展开图。
+`F.unfold` 在 ONNX 中通常会变成 Gather 类节点。JBU 的输入是 512 通道、全分辨率 `224x224` 特征图，每个裁剪窗口都需要搬运大量大张量；在 310P 上该路径几乎被 Gather/内存访问占满。静态 Slice 虽然会使图变大，但可被 ATC 编译成明确的切片、逐元素乘加路径，实际吞吐远高于 Gather 展开图。
 
 ### 4.2 为什么 JBU 放到 CPU 导出
 
@@ -142,7 +142,7 @@ models/om_310p/query_features_full_fe86ede95e67.npy
 - 输入：`demo/oem_koeln_50.tif`，原图 `1000x1000`；
 - 类别：同一份 9 类文本；
 - 输入尺寸：`448x448`；
-- crop/stride：`224/112`；
+- 裁剪窗口大小/步长：`224/112`；
 - JBU：开启，`num_levels=1`；
 - `prob_thd=0.1`，`cls_token_lambda=-0.3`，`template=full`；
 - OM 使用第二张物理卡；PyTorch 单独测试使用第一张物理卡；
@@ -150,7 +150,7 @@ models/om_310p/query_features_full_fe86ede95e67.npy
 
 ### 5.1 Torch 与 OM：输入完全一致
 
-| 后端 | 硬件 | 单次预测 | 输出尺寸 | pixel accuracy | mIoU（9 类） | 与对方掩码一致率 |
+| 后端 | 硬件 | 单次预测 | 输出尺寸 | 像素准确率（pixel accuracy） | mIoU（9 类） | 与对方掩码一致率 |
 |---|---|---:|---:|---:|---:|---:|
 | PyTorch + torch_npu | 310P3 | 27.97 s | 1000x1000 | 0.747165 | 0.283411 | - |
 | 最新纯 OM（Slice JBU） | 310P3 | 8.60 s | 1000x1000 | 0.746837 | 0.285128 | 97.9419% |
@@ -166,7 +166,7 @@ demo_output_pytorch_latest9/oem_koeln_50_mask_torch_9class.png
 
 ### 5.2 JBU 优化前后
 
-| JBU 版本 | 单次整图预测 | JBU 单 crop | 与 Slice 版一致率 |
+| JBU 版本 | 单次整图预测 | JBU 单个裁剪窗口 | 与 Slice 版一致率 |
 |---|---:|---:|---:|
 | Unfold/Gather OM | 约 62.39 s | 约 6.45 s | 99.9731% |
 | Slice OM | 8.60~9.03 s | 约 0.508 s | 100%（生产副本） |
@@ -177,40 +177,40 @@ demo_output_pytorch_latest9/oem_koeln_50_mask_torch_9class.png
 
 下面数据来自已有文档，测试边界与本次 310P 不完全相同，因此不能直接当作同输入横向对比。
 
-### 6.1 310B1 Level-1 PyTorch patch A/B
+### 6.1 310B1 Level-1 PyTorch：启用/关闭 patch 对比
 
 来源：`ascend_310b_operators/scaled_dot_product_attention/evidence/LEVEL1_PATCH_COMPARISON_AND_OPERATOR_PERF_20260824.md`
 
-| 配置 | 输入/模型条件 | 墙钟时间 | 输出一致性 |
+| 配置 | 输入/模型条件 | 完整命令耗时（从启动到退出） | 输出一致性 |
 |---|---|---:|---|
-| `USE_PATCH=True` | 310B1，`num_levels=1`，完整 demo | 92.135 s | 与 patch-off 完全一致 |
-| `USE_PATCH=False` | 同一 310B1 输入、权重和类别 | 97.110 s | 与 patch-on 完全一致 |
+| 启用 patch（`USE_PATCH=True`） | 310B1，`num_levels=1`，完整 demo | 92.135 s | 与关闭 patch 完全一致 |
+| 关闭 patch（`USE_PATCH=False`） | 同一 310B1 输入、权重和类别 | 97.110 s | 与启用 patch 完全一致 |
 
 该文档只说明 A/B 使用同一输入、权重和类别，没有给出本次 `demo/oem_koeln_50.tif` 的文件名、当前 9 类配置和当前 OM 对应的统一计时范围，因此只能作为 310B1 patch 开关参考。
 
-### 6.2 310B1 热态 PyTorch
+### 6.2 310B1 PyTorch：模型常驻后的重复推理
 
 同一份 Level-1 文档记录：
 
-| 配置 | 模型构建 | 热态单次 Median | 备注 |
+| 配置 | 模型初始化耗时 | 单次推理中位数（Median） | 备注 |
 |---|---:|---:|---|
-| Patch-Off | 19.7885 s | 25.2589 s | `num_levels=1`，模型常驻后测量 |
-| Patch-On | 20.5162 s | 25.5437 s | 同一测试脚本 |
+| 关闭 patch | 19.7885 s | 25.2589 s | `num_levels=1`，模型常驻后重复测量 |
+| 启用 patch | 20.5162 s | 25.5437 s | 同一测试脚本 |
 
-该数据是 310B1 的 PyTorch 热态数据，不是当前 310P 的 `27.97 s`；硬件、算子路径、计时脚本和文档版本均不同。
+该数据是 310B1 的 PyTorch 模型常驻后重复推理数据，不是当前 310P 的 `27.97 s`；硬件、算子路径、计时脚本和文档版本均不同。
 
-### 6.3 310B1 纯 ACL 理论/Profiling 数据
+### 6.3 310B1 纯 ACL 理论/性能采样数据
 
 来源：`docs/theoretical_throughput_report.md`。
 
 | 指标 | 310B1 历史值 | 测试条件 |
 |---|---:|---|
-| ACL 实测整图时间 | 24.28 s/image | 6 crops，`eval_acl.py`，1 image profiling 工作负载 |
-| 实测吞吐量 | 0.04 img/s | 同上 |
-| JBU 占 per-crop | 约 90% | 旧 Gather/大内存搬运图 |
-| 理论 memory-bound 上限 | 9.416 s/image | 仅理论带宽估算，不是实测 |
+| ACL 实测整图时间 | 24.28 s/张 | 6 个裁剪窗口，`eval_acl.py`，单张图性能采样 |
+| 实测吞吐量 | 0.04 张/秒 | 同上 |
+| JBU 占每个裁剪窗口耗时 | 约 90% | 旧 Gather/大内存搬运图 |
+| 理论 memory-bound 上限 | 9.416 s/张 | 仅理论带宽估算，不是实测 |
 
-该数据使用 310B1、6 crop 和历史 ACL 评测流程，与本次 310P 的 448 输入 9 类单图结果不一致，不能直接用来计算 310P 加速比。
+该数据使用 310B1、6 个裁剪窗口和历史 ACL 评测流程，与本次 310P 的 448 输入 9 类单图结果不一致，不能直接用来计算 310P 加速比。
 
 ### 6.4 原部署文档中的 UDD5 精度数据
 
@@ -224,10 +224,10 @@ demo_output_pytorch_latest9/oem_koeln_50_mask_torch_9class.png
 ## 7. 数据可比性结论
 
 1. **可以直接比较的有第 5.1 节和第 9.4 节**：第 5.1 节是单张 OpenEarthMap 的 Torch/OM 对比；第 9.4 节是当前最新 310P OM 的 UDD5 全量评测。
-2. **310B1 的历史时间不能与本次 310P 时间直接做硬件加速比**：至少存在硬件型号、crop 数、数据集、模板、脚本和计时范围差异。
-3. **310B1 Level-1 patch A/B 可以在内部比较**，因为它们使用同一输入和同一权重；它只说明 patch-on/off 的相对变化。
+2. **310B1 的历史时间不能与本次 310P 时间直接做硬件加速比**：至少存在硬件型号、裁剪窗口数量、数据集、模板、脚本和计时范围差异。
+3. **310B1 Level-1 的启用/关闭 patch 结果可以在内部比较**，因为它们使用同一输入和同一权重；它只说明两种 patch 设置的相对变化。
 4. **UDD5 的历史 50.55/50.56 mIoU 与本次最新 310P 的 50.51 mIoU 可以作为同数据集参考，但评测后端、模型版本和配置仍需区分**；不能与当前 OpenEarthMap `koeln_50` 的 0.283/0.285 mIoU 混用。
-5. 如果需要严格的 310B 与 310P 横向性能表，应在两台设备上使用同一张 `oem_koeln_50.tif`、同一 9 类文件、同一 `448/224/112` 滑窗配置，并分别记录 warm-up、模型加载和单次 predict 三个时间口径。
+5. 如果需要严格的 310B 与 310P 横向性能表，应在两台设备上使用同一张 `oem_koeln_50.tif`、同一 9 类文件、同一 `448/224/112` 滑窗配置，并分别记录预热（warm-up）、模型加载和单次预测（predict）三个时间口径。
 
 ## 8. 复现命令
 
@@ -342,16 +342,16 @@ python scripts/demo_om.py \
 
 ### 9.1 310P：同一输入、同一 9 类配置
 
-| 后端 | 输入 | 类别 | 单次预测 | pixel accuracy | mIoU | 与对方掩码一致率 | 是否可直接比较 |
+| 后端 | 输入 | 类别 | 单次预测 | 像素准确率（pixel accuracy） | mIoU | 与对方掩码一致率 | 是否可直接比较 |
 |---|---|---|---:|---:|---:|---:|---|
 | PyTorch + torch_npu | `demo/oem_koeln_50.tif` | 9 类 | 27.97 s | 0.747165 | 0.283411 | 97.9419% | 是 |
 | 310P 纯 OM（Slice JBU） | `demo/oem_koeln_50.tif` | 9 类 | 8.60 s | 0.746837 | 0.285128 | 97.9419% | 是 |
 
-统一配置为 `448/224/112`（输入/crop/stride）、JBU `num_levels=1`、`template=full`、`prob_thd=0.1`、`cls_token_lambda=-0.3`。两侧均为模型加载后的单次预测时间，不含模型加载；OM 约为 PyTorch 的 `3.25x`。
+统一配置为 `448/224/112`（输入尺寸/裁剪窗口/窗口步长）、JBU `num_levels=1`、`template=full`、`prob_thd=0.1`、`cls_token_lambda=-0.3`。两侧均为模型加载后的单次预测时间，不含模型加载；OM 约为 PyTorch 的 `3.25x`。
 
 ### 9.2 310P：JBU Unfold 与 Slice
 
-| JBU 图 | 整图单次预测 | JBU 单 crop | 图特征 | 精度/一致性 |
+| JBU 图 | 整图单次预测 | JBU 单个裁剪窗口 | 图结构特征 | 精度/一致性 |
 |---|---:|---:|---|---|
 | Unfold/Gather OM | 约 62.39 s | 约 6.45 s | `Gather=16`、`Einsum=4` | 与 Slice 像素一致率 99.9731% |
 | Slice OM（当前生产） | 8.60~9.03 s | 约 0.508 s | `Gather=0`、`Einsum=0`、`Slice=1540` | 生产副本一致率 100% |
@@ -360,9 +360,9 @@ python scripts/demo_om.py \
 
 | 平台/后端 | 输入和配置 | 性能/精度指标 | 数据性质 |
 |---|---|---|---|
-| 310B1 PyTorch patch-on | Level-1 历史 demo，`num_levels=1` | 92.135 s 墙钟 | 与 patch-off 同输入 A/B，可内部比较 |
-| 310B1 PyTorch patch-off | 同上 | 97.110 s 墙钟；热态 Median 25.2589 s | 与 patch-on 同输入 A/B |
-| 310B1 纯 ACL | 历史 `eval_acl.py`，6 crops，1 image | 24.28 s/image；0.04 img/s | 不是当前 310P 输入/滑窗配置 |
+| 310B1 PyTorch（启用 patch） | Level-1 历史 demo，`num_levels=1` | 完整命令耗时 92.135 s | 与关闭 patch 使用同一输入，可内部比较 |
+| 310B1 PyTorch（关闭 patch） | 同上 | 完整命令耗时 97.110 s；单次推理中位数 25.2589 s | 与启用 patch 使用同一输入 |
+| 310B1 纯 ACL | 历史 `eval_acl.py`，6 个裁剪窗口，单张图 | 24.28 s/张；0.04 张/秒 | 不是当前 310P 输入/滑窗配置 |
 | UDD5 PyTorch | 历史 40 张，文档环境为 910_9382 | mIoU 50.55%，aAcc 74.86% | 数据集和类别不同 |
 | UDD5 ACL OM | 同上 | mIoU 50.56%，aAcc 74.87% | 数据集和类别不同 |
 
@@ -374,7 +374,7 @@ python scripts/demo_om.py \
 
 | 后端/模型 | 样本数 | aAcc | mIoU | mAcc | 平均推理 | 总推理 | 吞吐量 |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| 最新 310P Slice OM | 40 | 74.82% | 50.51% | 66.10% | 6.667 s/img | 266.67 s | 0.15 img/s |
+| 最新 310P Slice OM | 40 | 74.82% | 50.51% | 66.10% | 6.667 s/张 | 266.67 s | 0.15 张/秒 |
 
 逐类 IoU：vegetation `80.54%`，building `70.87%`，road `53.27%`，vehicle `21.52%`，background `26.37%`。
 
@@ -392,7 +392,7 @@ PyTorch 使用与 OM 相同的 `cfg_udd5.py`、5 类文本、`template=full`、�
 
 | 后端/模型 | 样本数 | aAcc | mIoU | mAcc | 平均推理 | 总推理 | 吞吐量 |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| 最新 310P PyTorch（patch-off） | 40 | 74.62% | 50.38% | 65.89% | 14.226 s/img | 569.05 s | 0.07 img/s |
+| 最新 310P PyTorch（关闭 patch） | 40 | 74.62% | 50.38% | 65.89% | 14.226 s/张 | 569.05 s | 0.07 张/秒 |
 
 逐类 IoU：vegetation `80.42%`，building `70.55%`，road `53.09%`，vehicle `21.50%`，background `26.33%`。
 
@@ -406,9 +406,9 @@ SegEarth-OV/logs/eval_310p_udd5_pytorch_patchoff/eval.log
 
 | 后端 | aAcc | mIoU | mAcc | 平均推理 | 吞吐量 |
 |---|---:|---:|---:|---:|---:|
-| PyTorch（patch-off） | 74.62% | 50.38% | 65.89% | 14.226 s/img | 0.07 img/s |
-| Slice OM | 74.82% | 50.51% | 66.10% | 6.667 s/img | 0.15 img/s |
-| OM - PyTorch | +0.20 个百分点 | +0.13 个百分点 | +0.21 个百分点 | -7.559 s/img | +0.08 img/s |
+| PyTorch（关闭 patch） | 74.62% | 50.38% | 65.89% | 14.226 s/张 | 0.07 张/秒 |
+| Slice OM | 74.82% | 50.51% | 66.10% | 6.667 s/张 | 0.15 张/秒 |
+| OM - PyTorch | +0.20 个百分点 | +0.13 个百分点 | +0.21 个百分点 | -7.559 s/张 | +0.08 张/秒 |
 
 在这次 UDD5 全量口径下，OM 单张推理约为 PyTorch 的 `2.13x`；两者使用同一验证集和类别配置，但 PyTorch 与 OM 的 JBU/数值路径不同，因此指标不要求逐像素完全一致。
 
@@ -428,7 +428,7 @@ SegEarth-OV/logs/eval_310p_udd5_pytorch_patchoff/eval.log
 | 310P PyTorch - 310B1 PyTorch | -0.24 个百分点 | -0.17 个百分点 | -0.26 个百分点 |
 | 310P Slice OM - 310B1 ACL/OM | -0.05 个百分点 | -0.05 个百分点 | -0.06 个百分点 |
 
-这里的“310B1”标签来自项目历史 README 和 `run_310b1.sh` 评测记录；`docs/deployment.md` 同时保留了 910 交叉编译环境说明，因此这组旧指标只作为项目历史基准，不作为严格硬件 A/B 结论。历史 310B1 ACL 的性能记录是另一套 6-crop profiling 口径（约 24.28 s/image），与当前 UDD5 40 张、448 输入的 310P 表格不能直接比较。
+这里的“310B1”标签来自项目历史 README 和 `run_310b1.sh` 评测记录；`docs/deployment.md` 同时保留了 910 交叉编译环境说明，因此这组旧指标只作为项目历史基准，不作为严格硬件 A/B 结论。历史 310B1 ACL 的性能记录是另一套“6 个裁剪窗口、单张图性能采样”口径（约 24.28 s/张），与当前 UDD5 40 张、448 输入的 310P 表格不能直接比较。
 
 ## 10. UDD5 评测命令
 
@@ -451,7 +451,7 @@ python scripts/eval_acl.py \
   --template full
 ```
 
-### 10.2 最新 PyTorch（310P patch-off）
+### 10.2 最新 PyTorch（310P 关闭 patch）
 
 ```bash
 source <CONDA_ROOT>/etc/profile.d/conda.sh
